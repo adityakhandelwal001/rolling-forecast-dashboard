@@ -1,6 +1,6 @@
 """
 Rolling Forecast Variance Dashboard
-Strictly Computes Matrix Variance Natively across Multiple MDS Snapshots
+Strictly Computes Matrix Variance Natively across Multiple Demand Sheets
 """
 
 import streamlit as st
@@ -209,10 +209,11 @@ with st.sidebar:
 
     for code, name in COMPANIES.items():
         with st.expander(f"{name} ({code})", expanded=False):
-            st.markdown(f"<div style='font-size:10px;color:{txt2};margin-bottom:4px;'>Older Snapshot (MDS 1)</div>", unsafe_allow_html=True)
-            f1 = st.file_uploader(f"mds1_{code}", type=["xlsx","xls","csv"], key=f"{code}_f1", label_visibility="collapsed")
-            st.markdown(f"<div style='font-size:10px;color:{txt2};margin-top:6px;margin-bottom:4px;'>Newer Snapshot (MDS 2)</div>", unsafe_allow_html=True)
-            f2 = st.file_uploader(f"mds2_{code}", type=["xlsx","xls","csv"], key=f"{code}_f2", label_visibility="collapsed")
+            # 🔴 UI RENAME: Shifted labels to 'Demand old' and 'Demand new'
+            st.markdown(f"<div style='font-size:10px;color:{txt2};margin-bottom:4px;'>Demand old</div>", unsafe_allow_html=True)
+            f1 = st.file_uploader(f"demand_old_{code}", type=["xlsx","xls","csv"], key=f"{code}_f1", label_visibility="collapsed")
+            st.markdown(f"<div style='font-size:10px;color:{txt2};margin-top:6px;margin-bottom:4px;'>Demand new</div>", unsafe_allow_html=True)
+            f2 = st.file_uploader(f"demand_new_{code}", type=["xlsx","xls","csv"], key=f"{code}_f2", label_visibility="collapsed")
             st.markdown(f"<div style='font-size:10px;color:{txt2};margin-top:6px;margin-bottom:4px;'>Reference Baseline Date</div>", unsafe_allow_html=True)
             ref_date = st.date_input(f"ref_{code}", value=date.today(), key=f"{code}_date", label_visibility="collapsed")
 
@@ -224,7 +225,7 @@ with st.sidebar:
 st.markdown(f"""
 <div style="padding-bottom:1.2rem;border-bottom:1px solid {border};margin-bottom:1.5rem;">
   <div style="font-size:20px;font-weight:600;color:{txt};">Rolling Forecast Variance Dashboard</div>
-  <div style="font-size:12px;color:{txt2};">Jakson · Powerica · Sudhir Power — Native Cross-MDS Comparison Runway</div>
+  <div style="font-size:12px;color:{txt2};">Jakson · Powerica · Sudhir Power — Native Cross-Demand Comparison Runway</div>
 </div>
 """, unsafe_allow_html=True)
 
@@ -239,7 +240,7 @@ if run:
 
         if not f1 and not f2: continue
         if not f1 or not f2:
-            errors.append(f"{name}: Both baseline MDS records are required to process the analysis matrix.")
+            errors.append(f"{name}: Both baseline demand records are required.")
             continue
 
         try:
@@ -250,7 +251,7 @@ if run:
             fc2, wk2 = get_n_week_forecast(df2, dates2, ref, n_weeks)
 
             if fc1.empty or fc2.empty:
-                errors.append(f"{name}: No forecast coordinates intersect with baseline date: {ref.strftime('%d %b %Y')}.")
+                errors.append(f"{name}: No forecast data coordinates intersect with baseline date.")
                 continue
 
             all_items = sorted(set(fc1['item'].tolist()) | set(fc2['item'].tolist()))
@@ -313,7 +314,7 @@ if 'results' not in st.session_state or not st.session_state['results']:
     <div style="background:{bg2};border:1px dashed {border};border-radius:12px;padding:40px;text-align:center;margin-top:2rem;">
       <div style="font-size:16px;font-weight:500;color:{txt};margin-bottom:8px;">Ready for Analysis Pipeline</div>
       <div style="font-size:13px;color:{txt2};max-width:500px;margin:0 auto;">
-        Open a company panel in the left sidebar control deck, upload both required MDS files, set the reference baseline date, and execute <b>Run Analysis</b>.
+        Open a company panel in the left sidebar control deck, upload both required Demand sheets (<b>Excel or CSV formats</b>), set the reference baseline date, and execute <b>Run Analysis</b>.
       </div>
     </div>
     """, unsafe_allow_html=True)
@@ -332,16 +333,17 @@ for tab, (code, res) in zip(tabs, results.items()):
         df = res['df']
         nw = res['n']
 
+        # ── UI RENAME: Info Bar ───────────────────────────────────────────
         st.markdown(f"""
         <div class="info-bar">
-          <b>MDS 1 File:</b> {res['f1_name']}<span class="sep">|</span>
-          <b>MDS 2 File:</b> {res['f2_name']}<span class="sep">|</span>
+          <b>Demand old File:</b> {res['f1_name']}<span class="sep">|</span>
+          <b>Demand new File:</b> {res['f2_name']}<span class="sep">|</span>
           <b>Reference Date:</b> {res['ref'].strftime('%d %b %Y')}<span class="sep">|</span>
           <b>Weeks Compared:</b> {nw}
         </div>
         """, unsafe_allow_html=True)
 
-        # ── Schedule Net Variance Summary Blocks ──────────────────────────
+        # ── UI RENAME: Schedule Net Variance Summary Blocks ───────────────
         st.markdown(f"<div class='section-title'>Schedule Net Variance by Horizon Bucket</div>", unsafe_allow_html=True)
         b1, b2, b3 = st.columns(3)
         for col, bname in zip([b1,b2,b3], ['0-6','7-10','11-13']):
@@ -357,11 +359,11 @@ for tab, (code, res) in zip(tabs, results.items()):
             <div class="bias-box">
               <div style="font-size:12px;font-weight:600;color:{txt};margin-bottom:8px;">Horizon Window Block: {bname} Weeks</div>
               <div class="bias-row">
-                <div class="bias-label">MDS 1 Volume</div>
+                <div class="bias-label">Demand old Vol</div>
                 <div class="bias-val">{vol1:,} Units</div>
               </div>
               <div class="bias-row">
-                <div class="bias-label">MDS 2 Volume</div>
+                <div class="bias-label">Demand new Vol</div>
                 <div class="bias-val">{vol2:,} Units</div>
               </div>
               <div class="bias-row">
@@ -371,7 +373,7 @@ for tab, (code, res) in zip(tabs, results.items()):
             </div>
             """, unsafe_allow_html=True)
 
-        # ── Family & Week Bucket Summary Exception Matrix ─────────────────
+        # ── UI RENAME: Family & Week Bucket Summary Exception Matrix ──────
         st.markdown(f"<div class='section-title'>Family & Horizon Window Variance Summary Deck</div>", unsafe_allow_html=True)
         
         fam_bkt_rows = []
@@ -386,8 +388,8 @@ for tab, (code, res) in zip(tabs, results.items()):
                 fam_bkt_rows.append({
                     'Product Family Group': fam,
                     'Horizon Window': f"{bname} Weeks",
-                    'MDS 1 Volume': int(v1),
-                    'MDS 2 Volume': int(v2),
+                    'Demand old Volume': int(v1),
+                    'Demand new Volume': int(v2),
                     'Net Shift': int(diff),
                     'Variance %': pct
                 })
@@ -411,12 +413,12 @@ for tab, (code, res) in zip(tabs, results.items()):
         if not fam_bkt_df.empty:
             styled_fam = fam_bkt_df.style.apply(style_family_matrix, axis=1)
             styled_fam = styled_fam.map(color_variance_cells, subset=['Net Shift', 'Variance %'])
-            styled_fam = styled_fam.format({'MDS 1 Volume': '{:,.0f}', 'MDS 2 Volume': '{:,.0f}', 'Net Shift': '{:+,.0f}', 'Variance %': '{:+.1f}%'}, na_rep='0')
+            styled_fam = styled_fam.format({'Demand old Volume': '{:,.0f}', 'Demand new Volume': '{:,.0f}', 'Net Shift': '{:+,.0f}', 'Variance %': '{:+.1f}%'}, na_rep='0')
             st.dataframe(styled_fam, use_container_width=True, height=280)
         else:
             st.info("No localized material variant groups map into active buckets.")
 
-        # ── KPI Blocks ────────────────────────────────────────────────────
+        # ── UI RENAME: KPI Blocks ─────────────────────────────────────────
         increased = int((df['total_diff']>0).sum())
         decreased = int((df['total_diff']<0).sum())
         net_chg   = int(df['total_diff'].sum())
@@ -429,7 +431,7 @@ for tab, (code, res) in zip(tabs, results.items()):
         </div>
         """, unsafe_allow_html=True)
 
-        # ── Charting Timeline ─────────────────────────────────────────────
+        # ── UI RENAME: Charting Timeline ──────────────────────────────────
         st.markdown(f"<div class='section-title'>Horizon Forecast Volume Comparison Timeline</div>", unsafe_allow_html=True)
         wk_labels  = [f"Wk {w}" for w in range(1,nw+1)]
         f1_tots    = [df[f'f1_w{w}'].sum() for w in range(1,nw+1)]
@@ -437,8 +439,8 @@ for tab, (code, res) in zip(tabs, results.items()):
         diff_tots  = [df[f'd_w{w}'].sum()  for w in range(1,nw+1)]
 
         fig = go.Figure()
-        fig.add_trace(go.Bar(name="MDS 1 Snapshot", x=wk_labels, y=f1_tots, marker_color=accent, opacity=0.8))
-        fig.add_trace(go.Bar(name="MDS 2 Snapshot", x=wk_labels, y=f2_tots, marker_color=green,  opacity=0.8))
+        fig.add_trace(go.Bar(name="Demand old Snapshot", x=wk_labels, y=f1_tots, marker_color=accent, opacity=0.8))
+        fig.add_trace(go.Bar(name="Demand new Snapshot", x=wk_labels, y=f2_tots, marker_color=green,  opacity=0.8))
         fig.add_trace(go.Scatter(name="Delta Variance Track", x=wk_labels, y=diff_tots, mode="lines+markers", line=dict(color=amber,width=2.5)))
         fig.add_hline(y=0, line_color=border, line_width=1)
         fig.update_layout(**base_layout(300, barmode="group", legend=dict(orientation="h",y=1.08,x=0,bgcolor="rgba(0,0,0,0)")))
@@ -487,19 +489,20 @@ for tab, (code, res) in zip(tabs, results.items()):
 
         fdf_s = fdf.sort_values('total_diff', key=lambda x: x.abs(), ascending=False)
 
+        # ── UI RENAME: Table Configurations ───────────────────────────────
         base_c = ['item','model','rating','phase','family','total_f1','total_f2','total_diff','pct_diff','status']
-        base_n = ['Item ID','Engine Model','Rating Spec','Phase','Family','MDS 1 Volume','MDS 2 Volume','Net Deviation','Δ %','State']
+        base_n = ['Item ID','Engine Model','Rating Spec','Phase','Family','Demand old Vol','Demand new Vol','Net Deviation','Δ %','State']
 
         wk_c, wk_n = [], []
         if show_wk:
             wk_c = [f'f1_w{w}' for w in range(1,nw+1)] + [f'f2_w{w}' for w in range(1,nw+1)] + [f'd_w{w}' for w in range(1,nw+1)]
-            wk_n = [f'MDS1 Wk {w}' for w in range(1,nw+1)] + [f'MDS2 Wk {w}' for w in range(1,nw+1)] + [f'Δ Wk {w}' for w in range(1,nw+1)]
+            wk_n = [f'Demand old Wk {w}' for w in range(1,nw+1)] + [f'Demand new Wk {w}' for w in range(1,nw+1)] + [f'Δ Wk {w}' for w in range(1,nw+1)]
 
         bkt_c, bkt_n = [], []
         if show_bkt:
             for bname in ['0-6','7-10','11-13','14+']:
                 bkt_c += [f'b1_{bname}',f'b2_{bname}',f'bd_{bname}',f'bp_{bname}']
-                bkt_n += [f'MDS1 {bname} Wk',f'MDS2 {bname} Wk',f'Δ {bname} Wk',f'Δ% {bname} Wk']
+                bkt_n += [f'Demand old {bname} Wk',f'Demand new {bname} Wk',f'Δ {bname} Wk',f'Δ% {bname} Wk']
 
         display = fdf_s[base_c + wk_c + bkt_c].copy()
         display.columns = base_n + wk_n + bkt_n
@@ -510,9 +513,20 @@ for tab, (code, res) in zip(tabs, results.items()):
             if s=='Decreased': return [f"background-color:rgba(220,38,38,0.05)"]*len(row)
             return [""]*len(row)
 
+        fmt = {'Demand old Vol':'{:,.0f}','Demand new Vol':'{:,.0f}','Net Deviation':'{:+,.0f}','Δ %':'{:+.1f}%'}
         var_cols = ['Net Deviation']
-        for w in range(1,nw+1): var_cols.append(f'Δ Wk {w}')
+
+        for w in range(1,nw+1):
+            fmt[f'Demand old Wk {w}'] = '{:,.0f}'
+            fmt[f'Demand new Wk {w}'] = '{:,.0f}'
+            fmt[f'Δ Wk {w}']  = '{:+,.0f}'
+            var_cols.append(f'Δ Wk {w}')
+
         for bname in ['0-6','7-10','11-13','14+']:
+            fmt[f'Demand old {bname} Wk'] = '{:,.0f}'
+            fmt[f'Demand new {bname} Wk'] = '{:,.0f}'
+            fmt[f'Δ {bname} Wk'] = '{:+,.0f}'
+            fmt[f'Δ% {bname} Wk'] = '{:+.1f}%'
             var_cols.append(f'Δ {bname} Wk')
             var_cols.append(f'Δ% {bname} Wk')
 
@@ -524,7 +538,7 @@ for tab, (code, res) in zip(tabs, results.items()):
 
         st.dataframe(styled, use_container_width=True, height=500)
 
-        # ── 🔴 NEW: Native PE Bias — Target vs Actual Matrix Tracking Block ──
+        # ── UI RENAME: PE Bias Section ────────────────────────────────────
         st.markdown(f"<div class='section-title'>PE Bias Track — Native Threshold Matrix Breakdown</div>", unsafe_allow_html=True)
         bx1, bx2, bx3 = st.columns(3)
         bias_rows_export = []
