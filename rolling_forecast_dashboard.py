@@ -12,25 +12,17 @@ import plotly.graph_objects as go
 
 st.set_page_config(page_title="Rolling Forecast Variance Dashboard", layout="wide")
 
-# Bucket threshold definitions
 BUCKET_THRESHOLDS = {
-    "0-6 Weeks": 5.0,    # Flags deviations strictly beyond ±5%
-    "7-10 Weeks": 10.0,  # Flags deviations strictly beyond ±10%
-    "11-13 Weeks": 15.0, # Flags deviations strictly beyond ±15%
-    "14+ Weeks": 20.0    # Flags deviations strictly beyond ±20%
+    "0-6 Weeks": 5.0,    
+    "7-10 Weeks": 10.0,  
+    "11-13 Weeks": 15.0, 
+    "14+ Weeks": 20.0    
 }
 
-bg     = "#ffffff"
-bg2    = "#f4f6f9"
-txt    = "#1a1f2e"
-txt2   = "#5a6478"
-accent = "#2563eb"
-green  = "#16a34a"
-red    = "#dc2626"
-amber  = "#d97706"
-border = "#d1d9e6"
-grid_c = "rgba(0,0,0,0.04)"
-plot_bg = "rgba(0,0,0,0)"
+bg, bg2, txt, txt2, accent, green, red, amber, border, grid_c, plot_bg = (
+    "#ffffff", "#f4f6f9", "#1a1f2e", "#5a6478", "#2563eb", 
+    "#16a34a", "#dc2626", "#d97706", "#d1d9e6", "rgba(0,0,0,0.04)", "rgba(0,0,0,0)"
+)
 
 COMPANIES = {
     "JL":  "Jakson Limited",
@@ -79,7 +71,7 @@ def parse_any_date(v):
     if isinstance(v, (int, float)):
         if v > 40000:
             try: return (datetime(1899, 12, 30) + pd.to_timedelta(int(v), unit='D')).date()
-            except: pass
+            except Exception: pass
     if isinstance(v, str):
         v_str = v.strip()
         for fmt in ["%Y-%m-%d %H:%M:%S", "%Y-%m-%d", "%d-%b-%Y", "%d-%m-%Y", "%d/%m/%Y", "%m/%d/%Y"]:
@@ -88,10 +80,20 @@ def parse_any_date(v):
     return None
 
 
+def find_header_index(raw):
+    for i in range(min(15, len(raw))):
+        row_vals = [str(x).lower().strip() for x in raw.iloc[i].tolist()]
+        if any(keyword in val for keyword in ['coolpac', 'item', 'material', 'part'] for val in row_vals):
+            return i
+    return -1
+
+
 def process_raw_dataframe(raw, name, ref_date):
-    if len(raw) < 3: return None, []
+    header_idx = find_header_index(raw)
+    if header_idx == -1 or len(raw) <= header_idx + 1:
+        return None, []
     
-    headers = ["" if pd.isna(x) else str(x).strip() for x in raw.iloc[2].tolist()]
+    headers = ["" if pd.isna(x) else str(x).strip() for x in raw.iloc[header_idx].tolist()]
 
     item_col = next((i for i, h in enumerate(headers) if 'coolpac' in h.lower()), None)
     if item_col is None:
@@ -114,7 +116,7 @@ def process_raw_dataframe(raw, name, ref_date):
     valid_dates_count = sum(1 for d in date_col_map.keys() if d >= ref_ts)
     if valid_dates_count == 0: return None, []
 
-    data = raw.iloc[3:].reset_index(drop=True)
+    data = raw.iloc[header_idx + 1:].reset_index(drop=True)
     mask = data.iloc[:, item_col].notna() & data.iloc[:, item_col].astype(str).str.strip().str.startswith('A0')
     data = data[mask].reset_index(drop=True)
 
@@ -147,8 +149,10 @@ def process_raw_dataframe(raw, name, ref_date):
 
 def load_forecast(file_bytes, file_name, ref_date):
     if file_name.lower().endswith('.csv'):
-        try: raw = pd.read_csv(io.BytesIO(file_bytes), header=None, encoding='utf-8')
-        except: raw = pd.read_csv(io.BytesIO(file_bytes), header=None, encoding='latin1')
+        try: 
+            raw = pd.read_csv(io.BytesIO(file_bytes), header=None, encoding='utf-8')
+        except Exception: 
+            raw = pd.read_csv(io.BytesIO(file_bytes), header=None, encoding='latin1')
         return process_raw_dataframe(raw, file_name, ref_date)
     else:
         xf = pd.ExcelFile(io.BytesIO(file_bytes))
@@ -166,7 +170,7 @@ def load_forecast(file_bytes, file_name, ref_date):
                         max_valid_dates = valid_dates_count
                         best_df = df_parsed
                         best_dates = dates_parsed
-            except:
+            except Exception:
                 continue
         if best_df is not None: return best_df, best_dates
         raise ValueError(f"No valid forecast matrices found inside {file_name} for the selected date window.")
@@ -199,6 +203,164 @@ def base_layout(height=300, **kwargs):
         **kwargs
     )
 
+# ── Reusable Component Renderer ───────────────────────────────────────────────
+def render_variance_view(df, nw, code, info_context=None):
+    if info_context:
+        st.markdown(f"""
+        <div class="info-bar">
+          <b>Demand old File:</b> {info_context['f1_name']}<span class="sep">|</span>
+          <b>Demand new File:</b> {info_context['f2_name']}<span class="sep">|</span>
+          <b>Reference Date:</b> {info_context['ref'].strftime('%d %b %Y')}<span class="sep">|</span>
+          <b>Weeks Compared:</b> {nw}
+        </div>
+        """, unsafe_allow_html=True)
+
+    st.markdown(f"<div class='section-title'>Schedule Net Variance by Horizon Bucket</div>", unsafe_allow_html=True)
+    b1, b2, b3 = st.columns(3)
+    for col, bname in zip([b1,b2,b3], ['0-6','7-10','11-13']):
+        vol1 = int(df[f'b1_{bname}'].sum())
+        vol2 = int(df[f'b2_{bname}'].sum())
+        net_var_pct = ((vol2 - vol1) / vol1 * 100) if vol1 != 0 else (0.0 if vol2 == 0 else float('inf'))
+        
+        mapped_limit = BUCKET_THRESHOLDS.get(f"{bname} Weeks", 10.0)
+        color_cls = "bias-over" if abs(net_var_pct) > mapped_limit else "bias-ok"
+        flag = f" ⚠ OVER TARGET (>{mapped_limit}%)" if abs(net_var_pct) > mapped_limit else " ✓ WITHIN TARGET"
+        
+        col.markdown(f"""
+        <div class="bias-box">
+          <div style="font-size:12px;font-weight:600;color:{txt};margin-bottom:8px;">Horizon Window Block: {bname} Weeks</div>
+          <div class="bias-row"><div class="bias-label">Demand old Vol</div><div class="bias-val">{vol1:,} Units</div></div>
+          <div class="bias-row"><div class="bias-label">Demand new Vol</div><div class="bias-val">{vol2:,} Units</div></div>
+          <div class="bias-row"><div class="bias-label">Net Shift</div><div class="bias-val {color_cls}">{net_var_pct:+.1f}%{flag}</div></div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    st.markdown(f"<div class='section-title'>Family & Horizon Window Variance Summary Deck</div>", unsafe_allow_html=True)
+    
+    fam_bkt_rows = []
+    for fam in sorted(df['family'].dropna().unique()):
+        fam_df = df[df['family'] == fam]
+        for bname in ['0-6','7-10','11-13','14+']:
+            v1, v2 = fam_df[f'b1_{bname}'].sum(), fam_df[f'b2_{bname}'].sum()
+            diff = v2 - v1
+            pct = (diff / v1 * 100) if v1 != 0 else (0.0 if v2 == 0 else float('inf'))
+            fam_bkt_rows.append({
+                'Product Family Group': fam, 'Horizon Window': f"{bname} Weeks",
+                'Demand old Volume': int(v1), 'Demand new Volume': int(v2),
+                'Net Shift': int(diff), 'Variance %': pct
+            })
+    
+    fam_bkt_df = pd.DataFrame(fam_bkt_rows)
+    
+    def style_family_matrix(row):
+        val, mapped_limit = row['Variance %'], BUCKET_THRESHOLDS.get(row['Horizon Window'], 10.0)
+        if val == float('inf') or abs(val) > mapped_limit:
+            return [f"background-color:rgba(220,38,38,0.07); font-weight:500;"] * len(row)
+        return [""] * len(row)
+
+    def color_variance_cells(val):
+        if isinstance(val, (int, float)):
+            if val > 0: return f"color:{green}; font-weight:600;"
+            if val < 0: return f"color:{red}; font-weight:600;"
+        return ""
+
+    if not fam_bkt_df.empty:
+        styled_fam = fam_bkt_df.style.apply(style_family_matrix, axis=1)
+        styled_fam = styled_fam.map(color_variance_cells, subset=['Net Shift', 'Variance %'])
+        styled_fam = styled_fam.format({'Demand old Volume': '{:,.0f}', 'Demand new Volume': '{:,.0f}', 'Net Shift': '{:+,.0f}', 'Variance %': '{:+.1f}%'}, na_rep='0')
+        st.dataframe(styled_fam, use_container_width=True, height=280)
+    else:
+        st.info("No localized material variant groups map into active buckets.")
+
+    increased, decreased, net_chg = int((df['total_diff']>0).sum()), int((df['total_diff']<0).sum()), int(df['total_diff'].sum())
+    st.markdown(f"""
+    <div class="kpi-grid">
+      <div class="kpi"><div class="kpi-label">Tracked Components</div><div class="kpi-value accent">{len(df):,}</div></div>
+      <div class="kpi"><div class="kpi-label">Increased Targets</div><div class="kpi-value success">{increased:,}</div></div>
+      <div class="kpi"><div class="kpi-label">Decreased Targets</div><div class="kpi-value danger">{decreased:,}</div></div>
+      <div class="kpi"><div class="kpi-label">Gross Net Deviation</div><div class="kpi-value {'danger' if net_chg<0 else 'success' if net_chg>0 else ''}">{net_chg:+,}</div></div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.markdown(f"<div class='section-title'>Horizon Forecast Volume Comparison Timeline</div>", unsafe_allow_html=True)
+    wk_labels  = [f"Wk {w}" for w in range(1,nw+1)]
+    f1_tots    = [df[f'f1_w{w}'].sum() for w in range(1,nw+1)]
+    f2_tots    = [df[f'f2_w{w}'].sum() for w in range(1,nw+1)]
+    diff_tots  = [df[f'd_w{w}'].sum()  for w in range(1,nw+1)]
+
+    fig = go.Figure()
+    fig.add_trace(go.Bar(name="Demand old", x=wk_labels, y=f1_tots, marker_color=accent, opacity=0.8))
+    fig.add_trace(go.Bar(name="Demand new", x=wk_labels, y=f2_tots, marker_color=green,  opacity=0.8))
+    fig.add_trace(go.Scatter(name="Delta Variance Track", x=wk_labels, y=diff_tots, mode="lines+markers", line=dict(color=amber,width=2.5)))
+    fig.add_hline(y=0, line_color=border, line_width=1)
+    fig.update_layout(**base_layout(300, barmode="group", legend=dict(orientation="h",y=1.08,x=0,bgcolor="rgba(0,0,0,0)")))
+    st.plotly_chart(fig, use_container_width=True)
+
+    st.markdown(f"<div class='section-title'>Interactive Component Matrix Analytics</div>", unsafe_allow_html=True)
+    fc1,fc2,fc3,fc4 = st.columns(4)
+    sel_model  = fc1.multiselect("Filter Engine Model", sorted(df['model'].dropna().unique().tolist()), placeholder="All", key=f"{code}_model")
+    sel_rating = fc2.multiselect("Filter Operational Rating", sorted(df['rating'].dropna().unique().tolist()), placeholder="All", key=f"{code}_rating")
+    sel_phase  = fc3.multiselect("Filter Phase Line", sorted(df['phase'].dropna().unique().tolist()), placeholder="All", key=f"{code}_phase")
+    sel_status = fc4.multiselect("Filter Tracking Status", ["On plan","Increased","Decreased"], placeholder="All", key=f"{code}_status")
+    search     = st.text_input("Component Match Query", placeholder="Enter specific string...", key=f"{code}_search")
+
+    fdf = df.copy()
+    if sel_model:  fdf = fdf[fdf['model'].isin(sel_model)]
+    if sel_rating: fdf = fdf[fdf['rating'].isin(sel_rating)]
+    if sel_phase:  fdf = fdf[fdf['phase'].isin(sel_phase)]
+    if sel_status: fdf = fdf[fdf['status'].isin(sel_status)]
+    if search: fdf = fdf[fdf['item'].str.lower().str.contains(search.lower(),na=False)|fdf['model'].str.lower().str.contains(search.lower(),na=False)]
+
+    st.markdown(f"<div style='font-size:12px;color:{txt2};margin-bottom:0.5rem'>{len(fdf):,} matching items isolated</div>", unsafe_allow_html=True)
+
+    show_wk  = st.checkbox("Toggle Week-by-Week Data", key=f"{code}_wk")
+    show_bkt = st.checkbox("Toggle Segment Horizon Summary Blocks", key=f"{code}_bkt", value=True)
+
+    fdf_s = fdf.sort_values('total_diff', key=lambda x: x.abs(), ascending=False)
+    base_c = ['item','model','rating','phase','family','total_f1','total_f2','total_diff','pct_diff','status']
+    base_n = ['Item ID','Engine Model','Rating Spec','Phase','Family','Demand old Vol','Demand new Vol','Net Deviation','Δ %','State']
+    wk_c, wk_n, bkt_c, bkt_n = [], [], [], []
+    
+    if show_wk:
+        wk_c = [f'f1_w{w}' for w in range(1,nw+1)] + [f'f2_w{w}' for w in range(1,nw+1)] + [f'd_w{w}' for w in range(1,nw+1)]
+        wk_n = [f'Demand old Wk {w}' for w in range(1,nw+1)] + [f'Demand new Wk {w}' for w in range(1,nw+1)] + [f'Δ Wk {w}' for w in range(1,nw+1)]
+    if show_bkt:
+        for bname in ['0-6','7-10','11-13','14+']:
+            bkt_c += [f'b1_{bname}',f'b2_{bname}',f'bd_{bname}',f'bp_{bname}']
+            bkt_n += [f'Demand old {bname} Wk',f'Demand new {bname} Wk',f'Δ {bname} Wk',f'Δ% {bname} Wk']
+
+    display = fdf_s[base_c + wk_c + bkt_c].copy()
+    display.columns = base_n + wk_n + bkt_n
+
+    def color_rows(row):
+        if row['State']=='Increased': return [f"background-color:rgba(22,163,74,0.05)"]*len(row)
+        if row['State']=='Decreased': return [f"background-color:rgba(220,38,38,0.05)"]*len(row)
+        return [""]*len(row)
+
+    fmt = {'Demand old Vol':'{:,.0f}','Demand new Vol':'{:,.0f}','Net Deviation':'{:+,.0f}','Δ %':'{:+.1f}%'}
+    var_cols = ['Net Deviation']
+    for w in range(1,nw+1):
+        fmt[f'Demand old Wk {w}'] = fmt[f'Demand new Wk {w}'] = '{:,.0f}'
+        fmt[f'Δ Wk {w}'] = '{:+,.0f}'
+        var_cols.append(f'Δ Wk {w}')
+    for bname in ['0-6','7-10','11-13','14+']:
+        fmt[f'Demand old {bname} Wk'] = fmt[f'Demand new {bname} Wk'] = '{:,.0f}'
+        fmt[f'Δ {bname} Wk'], fmt[f'Δ% {bname} Wk'] = '{:+,.0f}', '{:+.1f}%'
+        var_cols.extend([f'Δ {bname} Wk', f'Δ% {bname} Wk'])
+
+    var_cols_in = [c for c in var_cols if c in display.columns]
+    styled = display.style.apply(color_rows, axis=1)
+    if var_cols_in: styled = styled.map(color_variance_cells, subset=var_cols_in)
+    st.dataframe(styled.format(fmt, na_rep='0'), use_container_width=True, height=500)
+
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine='openpyxl') as writer:
+        display.to_excel(writer, sheet_name='Summary_Variance', index=False)
+        if not fam_bkt_df.empty: fam_bkt_df.to_excel(writer, sheet_name='Family_Bucket_Breakdown', index=False)
+    st.download_button(f"Download Consolidated {code} Matrix Report (.xlsx)", data=buf.getvalue(),
+        file_name=f"{code}_forecast_variance_{datetime.today().strftime('%d%b%Y')}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
 
 # ── Sidebar Control Panel ─────────────────────────────────────────────────────
 with st.sidebar:
@@ -209,7 +371,6 @@ with st.sidebar:
 
     for code, name in COMPANIES.items():
         with st.expander(f"{name} ({code})", expanded=False):
-            # 🔴 UI RENAME: Shifted labels to 'Demand old' and 'Demand new'
             st.markdown(f"<div style='font-size:10px;color:{txt2};margin-bottom:4px;'>Demand old</div>", unsafe_allow_html=True)
             f1 = st.file_uploader(f"demand_old_{code}", type=["xlsx","xls","csv"], key=f"{code}_f1", label_visibility="collapsed")
             st.markdown(f"<div style='font-size:10px;color:{txt2};margin-top:6px;margin-bottom:4px;'>Demand new</div>", unsafe_allow_html=True)
@@ -220,8 +381,7 @@ with st.sidebar:
     st.write("")
     run = st.button("Run Analysis")
 
-
-# ── Header ────────────────────────────────────────────────────────────────────
+# ── Processing & Execution ────────────────────────────────────────────────────
 st.markdown(f"""
 <div style="padding-bottom:1.2rem;border-bottom:1px solid {border};margin-bottom:1.5rem;">
   <div style="font-size:20px;font-weight:600;color:{txt};">Rolling Forecast Variance Dashboard</div>
@@ -234,10 +394,7 @@ if run:
     errors  = []
 
     for code, name in COMPANIES.items():
-        f1  = st.session_state.get(f"{code}_f1")
-        f2  = st.session_state.get(f"{code}_f2")
-        ref = st.session_state.get(f"{code}_date", date.today())
-
+        f1, f2, ref = st.session_state.get(f"{code}_f1"), st.session_state.get(f"{code}_f2"), st.session_state.get(f"{code}_date", date.today())
         if not f1 and not f2: continue
         if not f1 or not f2:
             errors.append(f"{name}: Both baseline demand records are required.")
@@ -255,333 +412,76 @@ if run:
                 continue
 
             all_items = sorted(set(fc1['item'].tolist()) | set(fc2['item'].tolist()))
-            i1 = fc1.set_index('item')
-            i2 = fc2.set_index('item')
-            n  = min(len(wk1), len(wk2), n_weeks)
+            i1, i2, n = fc1.set_index('item'), fc2.set_index('item'), min(len(wk1), len(wk2), n_weeks)
 
             rows = []
             for item in all_items:
                 r1 = i1.loc[item] if item in i1.index else None
                 r2 = i2.loc[item] if item in i2.index else None
-                model  = r1['model']  if r1 is not None else (r2['model']  if r2 is not None else '')
-                rating = r1['rating'] if r1 is not None else (r2['rating'] if r2 is not None else '')
-                phase  = r1['phase']  if r1 is not None else (r2['phase']  if r2 is not None else '')
-                family = r1['family'] if r1 is not None else (r2['family'] if r2 is not None else 'N/A')
-                
-                row = {'item':item,'model':model,'rating':rating,'phase':phase,'family':family}
+                row = {
+                    'item':item,
+                    'model':r1['model'] if r1 is not None else (r2['model'] if r2 is not None else ''),
+                    'rating':r1['rating'] if r1 is not None else (r2['rating'] if r2 is not None else ''),
+                    'phase':r1['phase'] if r1 is not None else (r2['phase'] if r2 is not None else ''),
+                    'family':r1['family'] if r1 is not None else (r2['family'] if r2 is not None else 'N/A')
+                }
                 for w in range(1, n+1):
                     v1 = float(r1[f'w{w}']) if r1 is not None and f'w{w}' in r1.index else 0.0
                     v2 = float(r2[f'w{w}']) if r2 is not None and f'w{w}' in r2.index else 0.0
-                    row[f'f1_w{w}'] = round(v1)
-                    row[f'f2_w{w}'] = round(v2)
-                    row[f'd_w{w}']  = round(v2 - v1)
+                    row[f'f1_w{w}'], row[f'f2_w{w}'], row[f'd_w{w}'] = round(v1), round(v2), round(v2 - v1)
                     
-                t1 = sum(row.get(f'f1_w{w}',0) for w in range(1,n+1))
-                t2 = sum(row.get(f'f2_w{w}',0) for w in range(1,n+1))
-                row['total_f1']   = round(t1)
-                row['total_f2']   = round(t2)
-                row['total_diff'] = round(t2 - t1)
-                row['pct_diff']   = round((t2-t1)/t1*100,1) if t1!=0 else (0.0 if t2==0 else float('inf'))
+                t1, t2 = sum(row.get(f'f1_w{w}',0) for w in range(1,n+1)), sum(row.get(f'f2_w{w}',0) for w in range(1,n+1))
+                row['total_f1'], row['total_f2'], row['total_diff'] = round(t1), round(t2), round(t2 - t1)
+                row['pct_diff'] = round((t2-t1)/t1*100,1) if t1!=0 else (0.0 if t2==0 else float('inf'))
 
                 bkt = {'0-6':(1,6),'7-10':(7,10),'11-13':(11,13),'14+':(14,9999)}
                 for bname,(bs,be) in bkt.items():
-                    bt1 = sum(row.get(f'f1_w{w}',0) for w in range(1,n+1) if bs<=w<=be)
-                    bt2 = sum(row.get(f'f2_w{w}',0) for w in range(1,n+1) if bs<=w<=be)
-                    row[f'b1_{bname}'] = round(bt1)
-                    row[f'b2_{bname}'] = round(bt2)
-                    row[f'bd_{bname}'] = round(bt2-bt1)
+                    bt1, bt2 = sum(row.get(f'f1_w{w}',0) for w in range(1,n+1) if bs<=w<=be), sum(row.get(f'f2_w{w}',0) for w in range(1,n+1) if bs<=w<=be)
+                    row[f'b1_{bname}'], row[f'b2_{bname}'], row[f'bd_{bname}'] = round(bt1), round(bt2), round(bt2-bt1)
                     row[f'bp_{bname}'] = round((bt2-bt1)/bt1*100,1) if bt1!=0 else (0.0 if bt2==0 else float('inf'))
 
                 row['status'] = 'On plan' if row['total_diff']==0 else ('Increased' if row['total_diff']>0 else 'Decreased')
                 rows.append(row)
 
-            results[code] = {
-                'df': pd.DataFrame(rows),
-                'name': name, 'ref': ref, 'n': n,
-                'f1_name': f1.name, 'f2_name': f2.name
-            }
+            results[code] = {'df': pd.DataFrame(rows), 'name': name, 'ref': ref, 'n': n, 'f1_name': f1.name, 'f2_name': f2.name}
         except Exception as e:
             errors.append(f"{name}: {str(e)}")
 
-    st.session_state['results']   = results
-    st.session_state['n_weeks']   = n_weeks
-    st.session_state['run_time']  = datetime.now().strftime("%d %b %Y %H:%M")
-
+    st.session_state['results'], st.session_state['n_weeks'], st.session_state['run_time'] = results, n_weeks, datetime.now().strftime("%d %b %Y %H:%M")
     for e in errors: st.error(e)
 
 if 'results' not in st.session_state or not st.session_state['results']:
-    st.markdown(f"""
-    <div style="background:{bg2};border:1px dashed {border};border-radius:12px;padding:40px;text-align:center;margin-top:2rem;">
-      <div style="font-size:16px;font-weight:500;color:{txt};margin-bottom:8px;">Ready for Analysis Pipeline</div>
-      <div style="font-size:13px;color:{txt2};max-width:500px;margin:0 auto;">
-        Open a company panel in the left sidebar control deck, upload both required Demand sheets (<b>Excel or CSV formats</b>), set the reference baseline date, and execute <b>Run Analysis</b>.
-      </div>
-    </div>
-    """, unsafe_allow_html=True)
     st.stop()
 
-results  = st.session_state['results']
-n_weeks  = st.session_state['n_weeks']
-run_time = st.session_state.get('run_time','—')
-
+results, n_weeks, run_time = st.session_state['results'], st.session_state['n_weeks'], st.session_state.get('run_time','—')
 st.markdown(f"<div class='info-bar'><b>Last run:</b> {run_time}<span class='sep'>|</span><b>Horizon Runway Width:</b> {n_weeks} weeks</div>", unsafe_allow_html=True)
 
-tabs = st.tabs([f"{COMPANIES[c]} ({c})" for c in results])
+# ── Dynamic Tab Generation ────────────────────────────────────────────────────
+tab_names = [f"{COMPANIES[c]} ({c})" for c in results]
+show_consolidated = (len(results) == len(COMPANIES))
 
-for tab, (code, res) in zip(tabs, results.items()):
-    with tab:
-        df = res['df']
-        nw = res['n']
+if show_consolidated:
+    tab_names.append("Consolidated Network")
 
-        # ── UI RENAME: Info Bar ───────────────────────────────────────────
-        st.markdown(f"""
-        <div class="info-bar">
-          <b>Demand old File:</b> {res['f1_name']}<span class="sep">|</span>
-          <b>Demand new File:</b> {res['f2_name']}<span class="sep">|</span>
-          <b>Reference Date:</b> {res['ref'].strftime('%d %b %Y')}<span class="sep">|</span>
-          <b>Weeks Compared:</b> {nw}
-        </div>
-        """, unsafe_allow_html=True)
+tabs = st.tabs(tab_names)
 
-        # ── UI RENAME: Schedule Net Variance Summary Blocks ───────────────
-        st.markdown(f"<div class='section-title'>Schedule Net Variance by Horizon Bucket</div>", unsafe_allow_html=True)
-        b1, b2, b3 = st.columns(3)
-        for col, bname in zip([b1,b2,b3], ['0-6','7-10','11-13']):
-            vol1 = int(df[f'b1_{bname}'].sum())
-            vol2 = int(df[f'b2_{bname}'].sum())
-            net_var_pct = ((vol2 - vol1) / vol1 * 100) if vol1 != 0 else (0.0 if vol2 == 0 else float('inf'))
-            
-            mapped_limit = BUCKET_THRESHOLDS.get(f"{bname} Weeks", 10.0)
-            color_cls = "bias-over" if abs(net_var_pct) > mapped_limit else "bias-ok"
-            flag = f" ⚠ OVER TARGET (>{mapped_limit}%)" if abs(net_var_pct) > mapped_limit else " ✓ WITHIN TARGET"
-            
-            col.markdown(f"""
-            <div class="bias-box">
-              <div style="font-size:12px;font-weight:600;color:{txt};margin-bottom:8px;">Horizon Window Block: {bname} Weeks</div>
-              <div class="bias-row">
-                <div class="bias-label">Demand old Vol</div>
-                <div class="bias-val">{vol1:,} Units</div>
-              </div>
-              <div class="bias-row">
-                <div class="bias-label">Demand new Vol</div>
-                <div class="bias-val">{vol2:,} Units</div>
-              </div>
-              <div class="bias-row">
-                <div class="bias-label">Net Shift</div>
-                <div class="bias-val {color_cls}">{net_var_pct:+.1f}%{flag}</div>
-              </div>
-            </div>
-            """, unsafe_allow_html=True)
+for i, (code, res) in enumerate(results.items()):
+    with tabs[i]:
+        render_variance_view(res['df'], res['n'], code, res)
 
-        # ── UI RENAME: Family & Week Bucket Summary Exception Matrix ──────
-        st.markdown(f"<div class='section-title'>Family & Horizon Window Variance Summary Deck</div>", unsafe_allow_html=True)
+if show_consolidated:
+    with tabs[-1]:
+        st.markdown(f"<div class='info-bar'><b>Consolidated View Active:</b> All underlying demand structures integrated.</div>", unsafe_allow_html=True)
+        all_dfs = [res['df'] for res in results.values()]
+        master_df = pd.concat(all_dfs, ignore_index=True)
         
-        fam_bkt_rows = []
-        for fam in sorted(df['family'].dropna().unique()):
-            fam_df = df[df['family'] == fam]
-            for bname in ['0-6','7-10','11-13','14+']:
-                v1 = fam_df[f'b1_{bname}'].sum()
-                v2 = fam_df[f'b2_{bname}'].sum()
-                diff = v2 - v1
-                pct = (diff / v1 * 100) if v1 != 0 else (0.0 if v2 == 0 else float('inf'))
-                
-                fam_bkt_rows.append({
-                    'Product Family Group': fam,
-                    'Horizon Window': f"{bname} Weeks",
-                    'Demand old Volume': int(v1),
-                    'Demand new Volume': int(v2),
-                    'Net Shift': int(diff),
-                    'Variance %': pct
-                })
+        agg_funcs = {col: 'sum' for col in master_df.columns if col not in ['item', 'model', 'rating', 'phase', 'family', 'status', 'pct_diff', 'bp_0-6', 'bp_7-10', 'bp_11-13', 'bp_14+']}
+        agg_df = master_df.groupby(['item', 'model', 'rating', 'phase', 'family']).agg(agg_funcs).reset_index()
         
-        fam_bkt_df = pd.DataFrame(fam_bkt_rows)
+        agg_df['pct_diff'] = np.where(agg_df['total_f1'] == 0, np.where(agg_df['total_f2'] == 0, 0.0, float('inf')), ((agg_df['total_f2'] - agg_df['total_f1']) / agg_df['total_f1']) * 100).round(1)
+        for bname in ['0-6', '7-10', '11-13', '14+']:
+            agg_df[f'bp_{bname}'] = np.where(agg_df[f'b1_{bname}'] == 0, np.where(agg_df[f'b2_{bname}'] == 0, 0.0, float('inf')), ((agg_df[f'b2_{bname}'] - agg_df[f'b1_{bname}']) / agg_df[f'b1_{bname}']) * 100).round(1)
         
-        def style_family_matrix(row):
-            bkt_label = row['Horizon Window']
-            val = row['Variance %']
-            mapped_limit = BUCKET_THRESHOLDS.get(bkt_label, 10.0)
-            if val == float('inf') or abs(val) > mapped_limit:
-                return [f"background-color:rgba(220,38,38,0.07); font-weight:500;"] * len(row)
-            return [""] * len(row)
-
-        def color_variance_cells(val):
-            if isinstance(val, (int, float)):
-                if val > 0: return f"color:{green}; font-weight:600;"
-                if val < 0: return f"color:{red}; font-weight:600;"
-            return ""
-
-        if not fam_bkt_df.empty:
-            styled_fam = fam_bkt_df.style.apply(style_family_matrix, axis=1)
-            styled_fam = styled_fam.map(color_variance_cells, subset=['Net Shift', 'Variance %'])
-            styled_fam = styled_fam.format({'Demand old Volume': '{:,.0f}', 'Demand new Volume': '{:,.0f}', 'Net Shift': '{:+,.0f}', 'Variance %': '{:+.1f}%'}, na_rep='0')
-            st.dataframe(styled_fam, use_container_width=True, height=280)
-        else:
-            st.info("No localized material variant groups map into active buckets.")
-
-        # ── UI RENAME: KPI Blocks ─────────────────────────────────────────
-        increased = int((df['total_diff']>0).sum())
-        decreased = int((df['total_diff']<0).sum())
-        net_chg   = int(df['total_diff'].sum())
-        st.markdown(f"""
-        <div class="kpi-grid">
-          <div class="kpi"><div class="kpi-label">Tracked Components</div><div class="kpi-value accent">{len(df):,}</div></div>
-          <div class="kpi"><div class="kpi-label">Increased Targets</div><div class="kpi-value success">{increased:,}</div></div>
-          <div class="kpi"><div class="kpi-label">Decreased Targets</div><div class="kpi-value danger">{decreased:,}</div></div>
-          <div class="kpi"><div class="kpi-label">Gross Net Deviation</div><div class="kpi-value {'danger' if net_chg<0 else 'success' if net_chg>0 else ''}">{net_chg:+,}</div></div>
-        </div>
-        """, unsafe_allow_html=True)
-
-        # ── UI RENAME: Charting Timeline ──────────────────────────────────
-        st.markdown(f"<div class='section-title'>Horizon Forecast Volume Comparison Timeline</div>", unsafe_allow_html=True)
-        wk_labels  = [f"Wk {w}" for w in range(1,nw+1)]
-        f1_tots    = [df[f'f1_w{w}'].sum() for w in range(1,nw+1)]
-        f2_tots    = [df[f'f2_w{w}'].sum() for w in range(1,nw+1)]
-        diff_tots  = [df[f'd_w{w}'].sum()  for w in range(1,nw+1)]
-
-        fig = go.Figure()
-        fig.add_trace(go.Bar(name="Demand old Snapshot", x=wk_labels, y=f1_tots, marker_color=accent, opacity=0.8))
-        fig.add_trace(go.Bar(name="Demand new Snapshot", x=wk_labels, y=f2_tots, marker_color=green,  opacity=0.8))
-        fig.add_trace(go.Scatter(name="Delta Variance Track", x=wk_labels, y=diff_tots, mode="lines+markers", line=dict(color=amber,width=2.5)))
-        fig.add_hline(y=0, line_color=border, line_width=1)
-        fig.update_layout(**base_layout(300, barmode="group", legend=dict(orientation="h",y=1.08,x=0,bgcolor="rgba(0,0,0,0)")))
-        st.plotly_chart(fig, use_container_width=True)
-
-        # ── Model Breakdown Sub-Chart ─────────────────────────────────────
-        st.markdown(f"<div class='section-title'>Gross Schedule Variance Breakdown by Engine Model Profile</div>", unsafe_allow_html=True)
-        model_var = df.groupby('model')['total_diff'].sum().sort_values()
-        model_var = model_var[model_var != 0]
-        if not model_var.empty:
-            fig2 = go.Figure(go.Bar(
-                y=model_var.index, x=model_var.values, orientation='h',
-                marker_color=[red if v<0 else green for v in model_var.values],
-                opacity=0.85, text=[f"{v:+,.0f}" for v in model_var.values], textposition="outside",
-            ))
-            fig2.add_vline(x=0, line_color=border, line_width=1)
-            fig2.update_layout(**base_layout(max(200, len(model_var)*30)))
-            st.plotly_chart(fig2, use_container_width=True)
-
-        # ── Component Filters Control Deck ────────────────────────────────
-        st.markdown(f"<div class='section-title'>Interactive Component Matrix Analytics</div>", unsafe_allow_html=True)
-        fc1,fc2,fc3,fc4 = st.columns(4)
-        models   = sorted(df['model'].dropna().unique().tolist())
-        ratings  = sorted(df['rating'].dropna().unique().tolist())
-        phases   = sorted(df['phase'].dropna().unique().tolist())
-
-        sel_model  = fc1.multiselect("Filter Engine Model", models,                          placeholder="All Models Included", key=f"{code}_model")
-        sel_rating = fc2.multiselect("Filter Operational Rating", ratings,                    placeholder="All Ratings Included", key=f"{code}_rating")
-        sel_phase  = fc3.multiselect("Filter Phase Line",        phases,                     placeholder="All Phases Included", key=f"{code}_phase")
-        sel_status = fc4.multiselect("Filter Tracking Status",   ["On plan","Increased","Decreased"], placeholder="All Profiles Included", key=f"{code}_status")
-        search     = st.text_input("Component / Family Match Query", placeholder="Enter specific search string...", key=f"{code}_search")
-
-        fdf = df.copy()
-        if sel_model:  fdf = fdf[fdf['model'].isin(sel_model)]
-        if sel_rating: fdf = fdf[fdf['rating'].isin(sel_rating)]
-        if sel_phase:  fdf = fdf[fdf['phase'].isin(sel_phase)]
-        if sel_status: fdf = fdf[fdf['status'].isin(sel_status)]
-        if search:
-            s = search.lower()
-            fdf = fdf[fdf['item'].str.lower().str.contains(s,na=False)|fdf['model'].str.lower().str.contains(s,na=False)]
-
-        st.markdown(f"<div style='font-size:12px;color:{txt2};margin-bottom:0.5rem'>{len(fdf):,} matching items isolated</div>", unsafe_allow_html=True)
-
-        show_wk  = st.checkbox("Toggle Week-by-Week Data Column Matrices", key=f"{code}_wk")
-        show_bkt = st.checkbox("Toggle Segment Horizon Summary Blocks", key=f"{code}_bkt", value=True)
-
-        fdf_s = fdf.sort_values('total_diff', key=lambda x: x.abs(), ascending=False)
-
-        # ── UI RENAME: Table Configurations ───────────────────────────────
-        base_c = ['item','model','rating','phase','family','total_f1','total_f2','total_diff','pct_diff','status']
-        base_n = ['Item ID','Engine Model','Rating Spec','Phase','Family','Demand old Vol','Demand new Vol','Net Deviation','Δ %','State']
-
-        wk_c, wk_n = [], []
-        if show_wk:
-            wk_c = [f'f1_w{w}' for w in range(1,nw+1)] + [f'f2_w{w}' for w in range(1,nw+1)] + [f'd_w{w}' for w in range(1,nw+1)]
-            wk_n = [f'Demand old Wk {w}' for w in range(1,nw+1)] + [f'Demand new Wk {w}' for w in range(1,nw+1)] + [f'Δ Wk {w}' for w in range(1,nw+1)]
-
-        bkt_c, bkt_n = [], []
-        if show_bkt:
-            for bname in ['0-6','7-10','11-13','14+']:
-                bkt_c += [f'b1_{bname}',f'b2_{bname}',f'bd_{bname}',f'bp_{bname}']
-                bkt_n += [f'Demand old {bname} Wk',f'Demand new {bname} Wk',f'Δ {bname} Wk',f'Δ% {bname} Wk']
-
-        display = fdf_s[base_c + wk_c + bkt_c].copy()
-        display.columns = base_n + wk_n + bkt_n
-
-        def color_rows(row):
-            s = row['State']
-            if s=='Increased': return [f"background-color:rgba(22,163,74,0.05)"]*len(row)
-            if s=='Decreased': return [f"background-color:rgba(220,38,38,0.05)"]*len(row)
-            return [""]*len(row)
-
-        fmt = {'Demand old Vol':'{:,.0f}','Demand new Vol':'{:,.0f}','Net Deviation':'{:+,.0f}','Δ %':'{:+.1f}%'}
-        var_cols = ['Net Deviation']
-
-        for w in range(1,nw+1):
-            fmt[f'Demand old Wk {w}'] = '{:,.0f}'
-            fmt[f'Demand new Wk {w}'] = '{:,.0f}'
-            fmt[f'Δ Wk {w}']  = '{:+,.0f}'
-            var_cols.append(f'Δ Wk {w}')
-
-        for bname in ['0-6','7-10','11-13','14+']:
-            fmt[f'Demand old {bname} Wk'] = '{:,.0f}'
-            fmt[f'Demand new {bname} Wk'] = '{:,.0f}'
-            fmt[f'Δ {bname} Wk'] = '{:+,.0f}'
-            fmt[f'Δ% {bname} Wk'] = '{:+.1f}%'
-            var_cols.append(f'Δ {bname} Wk')
-            var_cols.append(f'Δ% {bname} Wk')
-
-        var_cols_in = [c for c in var_cols if c in display.columns]
-
-        styled = display.style.apply(color_rows, axis=1)
-        if var_cols_in: styled = styled.map(color_variance_cells, subset=var_cols_in)
-        styled = styled.format(fmt, na_rep='0')
-
-        st.dataframe(styled, use_container_width=True, height=500)
-
-        # ── UI RENAME: PE Bias Section ────────────────────────────────────
-        st.markdown(f"<div class='section-title'>PE Bias Track — Native Threshold Matrix Breakdown</div>", unsafe_allow_html=True)
-        bx1, bx2, bx3 = st.columns(3)
-        bias_rows_export = []
+        agg_df['status'] = np.where(agg_df['total_diff'] == 0, 'On plan', np.where(agg_df['total_diff'] > 0, 'Increased', 'Decreased'))
         
-        for col, bname, tgt_val in zip([bx1, bx2, bx3], ['0-6', '7-10', '11-13'], [5.0, 10.0, 15.0]):
-            b1_sum = fdf[f'b1_{bname}'].sum()
-            b2_sum = fdf[f'b2_{bname}'].sum()
-            act_bias_val = ((b2_sum - b1_sum) / b1_sum * 100) if b1_sum != 0 else (0.0 if b2_sum == 0 else float('inf'))
-            
-            is_breached = abs(act_bias_val) > tgt_val
-            color_cls = "bias-over" if is_breached else "bias-ok"
-            flag_msg = " ⚠ OVER TARGET LIMIT" if is_breached else " ✓ WITHIN CONTROL"
-            
-            bias_rows_export.append({
-                'Horizon Bucket Window': f"Weeks {bname}",
-                'Configured Target Range': f"±{tgt_val:.1f}%",
-                'Computed Actual Bias %': f"{act_bias_val:+.2f}%",
-                'Operational Status': 'OVER LIMIT' if is_breached else 'OK'
-            })
-            
-            col.markdown(f"""
-            <div class="bias-box">
-              <div style="font-size:12px;font-weight:600;color:{txt};margin-bottom:8px;">Weeks {bname} PE Bias Track</div>
-              <div class="bias-row">
-                <div class="bias-label">Target Range</div>
-                <div class="bias-val">±{tgt_val:.1f}%</div>
-              </div>
-              <div class="bias-row">
-                <div class="bias-label">Actual Bias</div>
-                <div class="bias-val {color_cls}">{act_bias_val:+.2f}%{flag_msg}</div>
-              </div>
-            </div>
-            """, unsafe_allow_html=True)
-
-        # ── Report Export ─────────────────────────────────────────────────
-        st.markdown(f"<div class='section-title'>Export Options</div>", unsafe_allow_html=True)
-        buf = io.BytesIO()
-        with pd.ExcelWriter(buf, engine='openpyxl') as writer:
-            display.to_excel(writer, sheet_name='Summary_Variance', index=False)
-            if not fam_bkt_df.empty:
-                fam_bkt_df.to_excel(writer, sheet_name='Family_Bucket_Breakdown', index=False)
-            pd.DataFrame(bias_rows_export).to_excel(writer, sheet_name='PE_Bias_Analysis', index=False)
-            
-        st.download_button(f"Download Consolidated {code} Matrix Report (.xlsx)", data=buf.getvalue(),
-            file_name=f"{code}_forecast_variance_{datetime.today().strftime('%d%b%Y')}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        render_variance_view(agg_df, n_weeks, "MASTER_CONSOLIDATED", None)
